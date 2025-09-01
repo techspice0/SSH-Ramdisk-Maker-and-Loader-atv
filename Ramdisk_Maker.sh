@@ -97,12 +97,6 @@ echo "Version: $version"
 echo "BuildID: $BuildID"
 echo "IPSW: $ipsw_link"
 
-# --- The rest of your original decryption/build logic ---
-# (Download BuildManifest, firmware keys, decrypt components, patch iBSS/iBEC,
-# build ramdisk, add dropbear, etc. — everything from your original script
-# works as-is once $device/$version/$BuildID are correctly set.)
-
-
 } &> /dev/null
 
 iOS_Vers=`echo $version | awk -F. '{print $1}'`
