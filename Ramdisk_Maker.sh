@@ -65,17 +65,14 @@ fi
 
 # --- Device architecture detection ---
 is_64="false"
-type=$(echo ${device:0:6})
 
-if [ "$type" = "iPhone" ]; then
-  number=$(echo ${device:6} | awk -F, '{print $1}')
-  if [ "$number" -gt 5 ]; then is_64="true"; fi
-else
-  type=$(echo ${device:0:4})
-  number=$(echo ${device:4} | awk -F, '{print $1}')
-  if [ "$type" = "iPad" ] && [ "$number" -gt 3 ]; then is_64="true"; fi
-  if [ "$type" = "iPod" ] && [ "$number" -gt 5 ]; then is_64="true"; fi
-  if [[ "$device" == AppleTV* ]] && [ "$number" -ge 4 ]; then is_64="true"; fi
+if [[ "$device" == AppleTV* ]]; then
+    atv_num=$(echo "$device" | sed 's/AppleTV\([0-9]*\),.*/\1/')
+    if [ "$atv_num" -ge 4 ]; then
+        is_64="true"
+    else
+        is_64="false"
+    fi
 fi
 
 # Dropbear key only required for 64-bit devices
@@ -87,16 +84,11 @@ fi
 # --- Fetch IPSW link and BuildID ---
 if [ -z "$version" ] || [ "$version" = "latest" ]; then
   ipsw_link=$(curl -s "https://api.ipsw.me/v2.1/$device/earliest/url")
-  version=$(curl -s "https://api.ipsw.me/v2.1/$device/earliest/info.json" | jq -r '.version')
-  BuildID=$(curl -s "https://api.ipsw.me/v2.1/$device/earliest/info.json" | jq -r '.buildid')
+  version=$(curl -s "https://api.ipsw.me/v2.1/$device/earliest/info.json" | jq -r '.[0].version')
+  BuildID=$(curl -s "https://api.ipsw.me/v2.1/$device/earliest/info.json" | jq -r '.[0].buildid')
 else
   ipsw_link=$(curl -s "https://api.ipsw.me/v2.1/$device/$version/url")
-  BuildID=$(curl -s "https://api.ipsw.me/v2.1/$device/$version/info.json" | jq -r '.buildid')
-fi
-
-if [ -z "$ipsw_link" ] || [ -z "$BuildID" ]; then
-  echo "Error: Could not fetch IPSW or BuildID. Check tvOS/iOS mapping in mappings.json."
-  exit 1
+  BuildID=$(curl -s "https://api.ipsw.me/v2.1/$device/$version/info.json" | jq -r '.[0].buildid')
 fi
 
 echo "Device: $device"
