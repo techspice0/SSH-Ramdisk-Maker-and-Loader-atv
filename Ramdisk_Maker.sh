@@ -216,30 +216,37 @@ if [ "$is_64" = "true" ]; then
     ../../bin/img4 -i RestoreRamDisk.raw.dmg -o ramdisk.img4 -T rdsk -A -M apticket.der
     mv ramdisk.img4 ../
 else
-    # --- 32-bit AppleTV ramdisk ---
-    ../../bin/xpwntool RestoreRamDisk.dec.img3 RestoreRamDisk.raw.dmg
-    hdiutil resize -size 30MB RestoreRamDisk.raw.dmg
-    mkdir ramdisk_mountpoint
-    hdiutil attach -mountpoint ramdisk_mountpoint RestoreRamDisk.raw.dmg
-    tar -xvf ../../resources/ssh.tar -C ramdisk_mountpoint/
-    hdiutil detach ramdisk_mountpoint
-    ../../bin/xpwntool RestoreRamDisk.raw.dmg ramdisk.dmg -t RestoreRamDisk.dec.img3
-    mv -v ramdisk.dmg ../
+# --- 32-bit AppleTV ramdisk ---
+../../bin/xpwntool RestoreRamDisk.dec.img3 RestoreRamDisk.raw.dmg
+hdiutil resize -size 30MB RestoreRamDisk.raw.dmg
+mkdir ramdisk_mountpoint
+hdiutil attach -mountpoint ramdisk_mountpoint RestoreRamDisk.raw.dmg
+tar -xvf ../../resources/ssh.tar -C ramdisk_mountpoint/
+hdiutil detach ramdisk_mountpoint
+../../bin/xpwntool RestoreRamDisk.raw.dmg ramdisk.dmg -t RestoreRamDisk.dec.img3
+mv -v ramdisk.dmg ../
 
-    ../../bin/xpwntool iBSS.dec.img3 iBSS.raw
-    ../../bin/iBoot32Patcher iBSS.raw iBSS.patched -r
-    ../../bin/xpwntool iBSS.patched iBSS -t iBSS.dec.img3
-    mv -v iBSS ../
+# iBSS
+../../bin/xpwntool iBSS.dec.img3 iBSS.raw
+../../bin/iBoot32Patcher iBSS.raw iBSS.patched -r
+../../bin/xpwntool iBSS.patched iBSS -t iBSS.dec.img3
+mv -v iBSS ../
+# Keep the raw file for ramdisk / later use
+cp -v iBSS.raw ../
 
-    ../../bin/xpwntool iBEC.dec.img3 iBEC.raw
-    ../../bin/iBoot32Patcher iBEC.raw iBEC.patched -r -d -b "rd=md0 -v amfi=0xff cs_enforcement_disable=1"
-    ../../bin/xpwntool iBEC.patched iBEC -t iBEC.dec.img3
-    mv -v iBEC ../
+# iBEC
+../../bin/xpwntool iBEC.dec.img3 iBEC.raw
+../../bin/iBoot32Patcher iBEC.raw iBEC.patched -r -d -b "rd=md0 -v amfi=0xff cs_enforcement_disable=1"
+../../bin/xpwntool iBEC.patched iBEC -t iBEC.dec.img3
+mv -v iBEC ../
+# Keep the raw file for ramdisk / later use
+cp -v iBEC.raw ../
 
-    mv -v applelogo.dec.img3 ../applelogo
-    mv -v DeviceTree.dec.img3 ../devicetree
-    mv -v kernelcache.dec.img3 ../kernelcache
-fi
+# Other components
+mv -v applelogo.dec.img3 ../applelogo
+mv -v DeviceTree.dec.img3 ../devicetree
+mv -v kernelcache.dec.img3 ../kernelcache
+
 
 # --- Cleanup ---
 cd ..
