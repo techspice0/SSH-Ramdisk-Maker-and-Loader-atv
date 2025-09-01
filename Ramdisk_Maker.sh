@@ -3,7 +3,7 @@
 ## SSH Ramdisk Maker (Apple TV Ready) - rewritten 2025
 ## Original: @Ralph0045 | Modified: @techspice0 + ChatGPT
 
-echo "**** SSH Ramdisk_Maker 3.1 ****"
+echo "**** SSH Ramdisk_Maker 3.2 ****"
 
 if [ $# -lt 2 ]; then
   echo "Usage:
@@ -12,7 +12,7 @@ if [ $# -lt 2 ]; then
   -i    specify iOS/tvOS version (optional; default is earliest available)
 
 Example:
-  ./ramdisk_maker.sh -d AppleTV3,1 -i 7.2
+  ./Ramdisk_Maker.sh -d AppleTV3,1 -i 7.2
 "
   exit 1
 fi
@@ -20,8 +20,12 @@ fi
 # --- Parse args ---
 args=("$@")
 for i in {0..4}; do
-  if [ "${args[i]}" = "-d" ]; then device=${args[i+1]}; fi
-  if [ "${args[i]}" = "-i" ]; then version=${args[i+1]}; fi
+  if [ "${args[i]}" = "-d" ]; then
+    device=${args[i+1]}
+  fi
+  if [ "${args[i]}" = "-i" ]; then
+    version=${args[i+1]}
+  fi
 done
 
 # --- Apply AppleTV JSON mapping if available ---
@@ -31,50 +35,50 @@ if [ -f "./mappings.json" ] && command -v jq >/dev/null 2>&1; then
     local ver="$2"
     local mapped
 
+    # exact match
     mapped=$(jq -r --arg d "$dev" --arg v "$ver" '.devices[$d].mappings[$v] // empty' mappings.json)
+
+    # major.minor fallback
     if [ -z "$mapped" ]; then
       majmin=$(echo "$ver" | awk -F. '{ if (NF>=2) print $1"."$2; else print $1 }')
       mapped=$(jq -r --arg d "$dev" --arg v "$majmin" '.devices[$d].mappings[$v] // empty' mappings.json)
     fi
+
+    # major-only fallback
     if [ -z "$mapped" ]; then
       maj=$(echo "$ver" | awk -F. '{print $1}')
       mapped=$(jq -r --arg d "$dev" --arg v "$maj" '.devices[$d].mappings[$v] // empty' mappings.json)
     fi
 
+    # return mapping only, log goes to stderr
     if [ -n "$mapped" ]; then
-      echo "Mapped $dev reported version $ver -> iOS $mapped"
+      echo "Mapped $dev reported version $ver -> tvOS $mapped" >&2
       echo "$mapped"
     else
       echo "$ver"
     fi
   }
 
+  # Apply mapping, version variable will only contain version number
   version=$(apply_tvos_mapping "$device" "${version:-latest}")
 fi
 
 # --- Device architecture detection ---
 is_64="false"
+type=$(echo ${device:0:6})
 
-if [[ "$device" == iPhone* ]]; then
-  number=$(echo "$device" | sed -E 's/iPhone([0-9]+),.*/\1/')
-  [ "$number" -gt 5 ] && is_64="true"
-elif [[ "$device" == iPad* ]]; then
-  number=$(echo "$device" | sed -E 's/iPad([0-9]+),.*/\1/')
-  [ "$number" -gt 3 ] && is_64="true"
-elif [[ "$device" == iPod* ]]; then
-  number=$(echo "$device" | sed -E 's/iPod([0-9]+),.*/\1/')
-  [ "$number" -gt 5 ] && is_64="true"
-elif [[ "$device" == AppleTV* ]]; then
-    # extract number correctly: strip "AppleTV" prefix and split by comma
-    atv_num=$(echo "$device" | sed 's/AppleTV\([0-9]*\),.*/\1/')
-    if [ "$atv_num" -ge 4 ]; then
-        is_64="true"
-    else
-        is_64="false"
-    fi
+if [ "$type" = "iPhone" ]; then
+  number=$(echo ${device:6} | awk -F, '{print $1}')
+  if [ "$number" -gt 5 ]; then is_64="true"; fi
+else
+  type=$(echo ${device:0:4})
+  number=$(echo ${device:4} | awk -F, '{print $1}')
+  if [ "$type" = "iPad" ] && [ "$number" -gt 3 ]; then is_64="true"; fi
+  if [ "$type" = "iPod" ] && [ "$number" -gt 5 ]; then is_64="true"; fi
+  if [[ "$device" == AppleTV* ]] && [ "$number" -ge 4 ]; then is_64="true"; fi
 fi
 
-
+# Dropbear key only required for 64-bit devices
 if [ "$is_64" = "true" ] && [ ! -f "resources/dropbear_rsa_host_key" ]; then
   echo "dropbear_rsa_host_key missing. Generate one first."
   exit 1
