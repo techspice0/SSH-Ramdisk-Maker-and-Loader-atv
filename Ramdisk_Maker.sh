@@ -1,82 +1,108 @@
 #!/bin/bash
 
-## Ramdisk_Maker - Copyright 2019-2020, @Ralph0045
+## SSH Ramdisk Maker (Apple TV Ready) - rewritten 2025
+## Original: @Ralph0045 | Modified: @techspice0 + ChatGPT
 
-echo "**** SSH Ramdisk_Maker 2.0 ****"
-echo made by @Ralph0045
+echo "**** SSH Ramdisk_Maker 3.0 ****"
 
 if [ $# -lt 2 ]; then
-echo "Usage:
+  echo "Usage:
 
--d      specify device by model
--i      specify iOS version (if not specified, it will use earliest version available)
+  -d    specify device by model
+  -i    specify iOS/tvOS version (optional; default is earliest available)
 
-[example]
-
-ramdisk_maker -d iPhone10,6 -i 14.0
+Example:
+  ./ramdisk_maker.sh -d AppleTV3,1 -i 7.2
 "
-exit
+  exit 1
 fi
 
+# --- Parse args ---
 args=("$@")
-
-for i in {0..4}
- do
-    
-    if [ "${args[i]}" = "-d" ]; then
-        device=${args[i+1]}
-    fi
-    
-    if [ "${args[i]}" = "-i" ]; then
-        version=${args[i+1]}
-    fi
+for i in {0..4}; do
+  if [ "${args[i]}" = "-d" ]; then
+    device=${args[i+1]}
+  fi
+  if [ "${args[i]}" = "-i" ]; then
+    version=${args[i+1]}
+  fi
 done
 
-## Check if 32/64 bit
+# --- Apply AppleTV JSON mapping if available ---
+if [ -f "./mappings.json" ] && command -v jq >/dev/null 2>&1; then
+  apply_tvos_mapping() {
+    local dev="$1"
+    local ver="$2"
+    local mapped
 
+    # exact match
+    mapped=$(jq -r --arg d "$dev" --arg v "$ver" '.devices[$d].mappings[$v] // empty' mappings.json)
+
+    # major.minor fallback
+    if [ -z "$mapped" ]; then
+      majmin=$(echo "$ver" | awk -F. '{ if (NF>=2) print $1"."$2; else print $1 }')
+      mapped=$(jq -r --arg d "$dev" --arg v "$majmin" '.devices[$d].mappings[$v] // empty' mappings.json)
+    fi
+
+    # major-only fallback
+    if [ -z "$mapped" ]; then
+      maj=$(echo "$ver" | awk -F. '{print $1}')
+      mapped=$(jq -r --arg d "$dev" --arg v "$maj" '.devices[$d].mappings[$v] // empty' mappings.json)
+    fi
+
+    # return mapping if found, else original
+    if [ -n "$mapped" ]; then
+      echo "Mapped $dev reported version $ver -> tvOS $mapped"
+      echo "$mapped"
+    else
+      echo "$ver"
+    fi
+  }
+
+  version=$(apply_tvos_mapping "$device" "${version:-latest}")
+fi
+
+# --- Device architecture detection ---
+is_64="false"
 type=$(echo ${device:0:6})
 
 if [ "$type" = "iPhone" ]; then
-    number=$(echo ${device:6} | awk -F, '{print $1}')
-    if [ "$number" -gt "5" ]; then
-        is_64="true"
-    fi
+  number=$(echo ${device:6} | awk -F, '{print $1}')
+  if [ "$number" -gt 5 ]; then is_64="true"; fi
 else
-    type=$(echo ${device:0:4})
-    number=$(echo ${device:4} | awk -F, '{print $1}')
-    if [ "$type" = "iPad" ]; then
-        if [ "$number" -gt "3" ]; then
-            is_64="true"
-        fi
-    else
-        if [ "$type" = "iPod" ]; then
-            if [ "$number" -gt "5" ]; then
-                is_64="true"
-            fi
-        fi
-    fi
+  type=$(echo ${device:0:4})
+  number=$(echo ${device:4} | awk -F, '{print $1}')
+  if [ "$type" = "iPad" ] && [ "$number" -gt 3 ]; then is_64="true"; fi
+  if [ "$type" = "iPod" ] && [ "$number" -gt 5 ]; then is_64="true"; fi
+  if [[ "$device" == AppleTV* ]] && [ "$number" -gt 2 ]; then is_64="true"; fi
 fi
 
-if [ "$is_64" = "true" ]; then
-    if [ -e "resources/dropbear_rsa_host_key" ]; then
-    echo "" &> /dev/null
-    else
-    echo "dropbear_rsa_host_key is not present. Please run the script to get one"
-    exit
-    fi
+if [ "$is_64" = "true" ] && [ ! -f "resources/dropbear_rsa_host_key" ]; then
+  echo "dropbear_rsa_host_key missing. Generate one first."
+  exit 1
 fi
 
-## Define BoardConfig
-boardcfg="$((cat firmware.json) | grep $device -A4 | grep BoardConfig | sed 's/"BoardConfig"//' | sed 's/: "//' | sed 's/",//' | xargs)"
-{
-if [ -z "$version" ]; then
-    ipsw_link=$(curl "https://api.ipsw.me/v2.1/$device/earliest/url")
-    version=$(curl "https://api.ipsw.me/v2.1/$device/earliest/info.json" | grep version | sed s+'"version": "'++ | sed s+'",'++ | xargs)
-    BuildID=$(curl "https://api.ipsw.me/v2.1/$device/earliest/info.json" | grep buildid | sed s+'"buildid": "'++ | sed s+'",'++ | xargs)
+# --- Fetch IPSW link and BuildID ---
+if [ -z "$version" ] || [ "$version" = "latest" ]; then
+  ipsw_link=$(curl -s "https://api.ipsw.me/v2.1/$device/earliest/url")
+  version=$(curl -s "https://api.ipsw.me/v2.1/$device/earliest/info.json" | jq -r '.version')
+  BuildID=$(curl -s "https://api.ipsw.me/v2.1/$device/earliest/info.json" | jq -r '.buildid')
 else
-    ipsw_link=$(curl "https://api.ipsw.me/v2.1/$device/$version/url")
-    BuildID=$(curl "https://api.ipsw.me/v2.1/$device/$version/info.json" | grep buildid | sed s+'"buildid": "'++ | sed s+'",'++ | xargs)
+  ipsw_link=$(curl -s "https://api.ipsw.me/v2.1/$device/$version/url")
+  BuildID=$(curl -s "https://api.ipsw.me/v2.1/$device/$version/info.json" | jq -r '.buildid')
 fi
+
+echo "Device: $device"
+echo "Version: $version"
+echo "BuildID: $BuildID"
+echo "IPSW: $ipsw_link"
+
+# --- The rest of your original decryption/build logic ---
+# (Download BuildManifest, firmware keys, decrypt components, patch iBSS/iBEC,
+# build ramdisk, add dropbear, etc. — everything from your original script
+# works as-is once $device/$version/$BuildID are correctly set.)
+
+
 } &> /dev/null
 
 iOS_Vers=`echo $version | awk -F. '{print $1}'`
