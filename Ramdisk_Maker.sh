@@ -65,9 +65,15 @@ elif [[ "$device" == iPod* ]]; then
   number=$(echo "$device" | sed -E 's/iPod([0-9]+),.*/\1/')
   [ "$number" -gt 5 ] && is_64="true"
 elif [[ "$device" == AppleTV* ]]; then
-  number=$(echo "$device" | sed -E 's/AppleTV([0-9]+),.*/\1/')
-  [ "$number" -gt 2 ] && is_64="true"
+    # extract number correctly: strip "AppleTV" prefix and split by comma
+    atv_num=$(echo "$device" | sed 's/AppleTV\([0-9]*\),.*/\1/')
+    if [ "$atv_num" -ge 4 ]; then
+        is_64="true"
+    else
+        is_64="false"
+    fi
 fi
+
 
 if [ "$is_64" = "true" ] && [ ! -f "resources/dropbear_rsa_host_key" ]; then
   echo "dropbear_rsa_host_key missing. Generate one first."
