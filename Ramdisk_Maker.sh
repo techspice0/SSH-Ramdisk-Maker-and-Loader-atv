@@ -246,7 +246,7 @@ cp -v iBEC.raw ../
 mv -v applelogo.dec.img3 ../applelogo
 mv -v DeviceTree.dec.img3 ../devicetree
 mv -v kernelcache.dec.img3 ../kernelcache
-
+fi
 
 # --- Cleanup ---
 cd ..
