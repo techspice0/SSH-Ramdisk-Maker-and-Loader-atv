@@ -108,14 +108,6 @@ else
     rm -rf rootlessJB3
 fi
 
-# --- firmware.json ---
-if [ -e "firmware.json" ]; then
-    echo "firmware.json is present"
-else
-    echo "Downloading firmware.json..."
-    curl https://api.ipsw.me/v2.1/firmwares.json --output firmware.json &> /dev/null
-fi
-
 # --- compareFiles.py ---
 if [ -e "bin/compareFiles.py" ]; then
     echo "compareFiles.py is present"
