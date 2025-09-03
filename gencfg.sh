@@ -1,50 +1,144 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# genconfig.sh
+# Auto-generate config JSON for SSH Ramdisk project (macOS compatible)
+# Usage:
+#   ./genconfig.sh <device> <core_ios> <keyver>
+# or:
+#   ./genconfig.sh   # will ask interactively
 
-CONFIG_FILE="sshrd_config.json"
+set -euo pipefail
 
-echo "**** SSH Ramdisk Config Generator ****"
-
-read -p "Device (e.g., AppleTV3,1): " device
-read -p "iOS/tvOS version (leave blank for earliest): " version
-read -p "64-bit device? (y/n): " is64
-read -p "IPSWHOST URL (leave blank for default via ipsw.me API): " ipsw_url
-read -p "AppleWiki rootFS key page (leave blank for default): " applewiki_url
-
-if [[ "$is64" =~ ^[Yy]$ ]]; then
-    is64=true
+# ---------- Input ----------
+if [ $# -eq 3 ]; then
+    DEVICE="$1"
+    CORE_IOS="$2"
+    KEYVER="$3"
 else
-    is64=false
+    read -rp "Enter device (e.g. AppleTV3,1): " DEVICE
+    read -rp "Enter core iOS version (e.g. 8.3 for tvOS 7.2): " CORE_IOS
+    read -rp "Enter key version (e.g. 7.2): " KEYVER
 fi
 
-# fetch IPSW URL if blank
-if [ -z "$ipsw_url" ]; then
-    if [ -z "$version" ]; then
-        ipsw_url=$(curl -s "https://api.ipsw.me/v2.1/$device/earliest/url")
-        version=$(curl -s "https://api.ipsw.me/v2.1/$device/earliest/info.json" | jq -r '.[0].version')
-        buildid=$(curl -s "https://api.ipsw.me/v2.1/$device/earliest/info.json" | jq -r '.[0].buildid')
-    else
-        ipsw_url=$(curl -s "https://api.ipsw.me/v2.1/$device/$version/url")
-        buildid=$(curl -s "https://api.ipsw.me/v2.1/$device/$version/info.json" | jq -r '.[0].buildid')
-    fi
-else
-    buildid=""  # optional, user can fill manually
-fi
+echo "[*] Device   : $DEVICE"
+echo "[*] Core iOS : $CORE_IOS"
+echo "[*] Key ver  : $KEYVER"
 
-# AppleWiki URL fallback
-if [ -z "$applewiki_url" ]; then
-    applewiki_url="https://www.theiphonewiki.com/wiki/Firmware_Keys/${version%%.*}.x"
-fi
+# ---------- Settings ----------
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+PZB_BIN="$SCRIPT_DIR/bin/partialZipBrowser"
+OUTDIR="$SCRIPT_DIR/config"
+WORKDIR="$SCRIPT_DIR/work"
+USER_AGENT="ssh-ramdisk-gencfg/1.0"
 
-mkdir -p config
-cat > config/$CONFIG_FILE <<EOF
-{
-  "device": "$device",
-  "version": "$version",
-  "is64": $is64,
-  "ipsw_url": "$ipsw_url",
-  "buildid": "$buildid",
-  "applewiki_url": "$applewiki_url"
+mkdir -p "$OUTDIR" "$WORKDIR"
+cd "$WORKDIR"
+
+# ---------- Get IPSW URL ----------
+echo "[*] Querying ipsw.me..."
+IPSW_URL=$(curl -s "https://api.ipsw.me/v2.1/$DEVICE/$CORE_IOS/url")
+
+if [ -z "$IPSW_URL" ]; then
+    echo "[!] Failed to get IPSW URL from ipsw.me"
+    exit 1
+fi
+echo "[+] IPSW URL: $IPSW_URL"
+
+# ---------- Fetch BuildManifest ----------
+echo "[*] Fetching BuildManifest..."
+$PZB_BIN -g BuildManifest.plist "$IPSW_URL" >/dev/null || {
+    echo "[!] Failed to fetch BuildManifest"
+    exit 1
 }
-EOF
+echo "[+] BuildManifest saved."
 
-echo "Configuration saved to config/$CONFIG_FILE"
+# ---------- Firmware Keys ----------
+MAJOR_VER="${KEYVER%%.*}"
+MAJOR_KEYS_URL="https://www.theiphonewiki.com/wiki/Firmware_Keys/${MAJOR_VER}.x"
+
+echo "[*] Fetching major firmware keys page..."
+curl -s -A "$USER_AGENT" "$MAJOR_KEYS_URL" -o temp_keys_major.html || true
+
+# ---------- Device-specific subpage ----------
+SUBPAGE=$(grep -Ei "href=\"/wiki/.*\($DEVICE\)\"" temp_keys_major.html \
+         | grep -i "$KEYVER" \
+         | head -1 \
+         | sed -E 's/.*href="([^"]+)".*/\1/')
+
+# Fallback if exact version not found
+if [ -z "$SUBPAGE" ]; then
+    echo "[*] Exact version not found, falling back to first device match..."
+    SUBPAGE=$(grep -Ei "href=\"/wiki/.*\($DEVICE\)\"" temp_keys_major.html \
+             | head -1 \
+             | sed -E 's/.*href="([^"]+)".*/\1/')
+fi
+
+if [ -z "$SUBPAGE" ]; then
+    echo "[!] Could not find wiki subpage for $DEVICE $KEYVER"
+    exit 1
+fi
+
+FULL_URL="https://www.theiphonewiki.com$SUBPAGE"
+echo "[*] Downloading device-specific firmware keys page..."
+curl -s -A "$USER_AGENT" "$FULL_URL" -o temp_keys.html || true
+
+if ! grep -q "key" temp_keys.html; then
+    echo "[!] Could not fetch firmware keys from device page"
+    exit 1
+fi
+echo "[+] Keys page saved."
+
+# ---------- Components ----------
+COMP_LIST=(iBSS iBEC DeviceTree AppleLogo KernelCache LLB RecoveryMode RestoreRamDisk)
+COMP_IV=()
+COMP_KEY=()
+COMP_PATH=()
+
+for i in "${!COMP_LIST[@]}"; do
+    comp="${COMP_LIST[$i]}"
+    lc=$(echo "$comp" | tr 'A-Z' 'a-z')
+
+    # Fetch IV/key
+    iv=$(grep -i "${lc}-iv" temp_keys.html | head -1 | sed -E 's/.*-iv[^>]*>([0-9a-fA-F]+).*/\1/')
+    key=$(grep -i "${lc}-key" temp_keys.html | head -1 | sed -E 's/.*-key[^>]*>([0-9a-fA-F]+).*/\1/')
+    COMP_IV[$i]="$iv"
+    COMP_KEY[$i]="$key"
+
+    # Fetch BuildManifest path
+    if [ "$comp" = "RestoreRamDisk" ]; then
+        path=$(grep -A100 -i "$comp" BuildManifest.plist | grep dmg -m1 | sed -E 's/.*<string>([^<]+)<\/string>.*/\1/')
+    else
+        path=$(grep -A20 -i "$comp" BuildManifest.plist | grep -m1 "<string>" | sed -E 's/.*<string>([^<]+)<\/string>.*/\1/')
+    fi
+    COMP_PATH[$i]="$path"
+done
+
+# ---------- Write JSON ----------
+OUTFILE="$OUTDIR/${DEVICE}_${KEYVER}.json"
+{
+echo "{"
+echo "  \"device\": \"$DEVICE\","
+echo "  \"is64\": false,"
+echo "  \"keyver\": \"$KEYVER\","
+echo "  \"core_ios\": \"$CORE_IOS\","
+echo "  \"ipsw_url\": \"$IPSW_URL\","
+echo "  \"components\": {"
+for i in "${!COMP_LIST[@]}"; do
+    comp="${COMP_LIST[$i]}"
+    path="${COMP_PATH[$i]}"
+    printf '    "%s": "%s"' "$comp" "$path"
+    [ "$i" -lt $((${#COMP_LIST[@]}-1)) ] && echo "," || echo
+done
+echo "  },"
+echo "  \"keys\": {"
+for i in "${!COMP_LIST[@]}"; do
+    comp="${COMP_LIST[$i]}"
+    iv="${COMP_IV[$i]}"
+    key="${COMP_KEY[$i]}"
+    printf '    "%s": { "iv": "%s", "key": "%s" }' "$comp" "$iv" "$key"
+    [ "$i" -lt $((${#COMP_LIST[@]}-1)) ] && echo "," || echo
+done
+echo "  }"
+echo "}"
+} > "$OUTFILE"
+
+echo "[+] Config written to $OUTFILE"
