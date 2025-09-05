@@ -1,71 +1,102 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# mksshrd.sh
+# Build SSH Ramdisk from JSON config (32-bit and 64-bit Apple TVs/iOS devices)
 
-CONFIG_FILE="config/sshrd_config.json"
+set -euo pipefail
 
-if [ ! -f "$CONFIG_FILE" ]; then
-    echo "Config not found! Run gencfg.sh first."
+if [ $# -lt 1 ]; then
+    echo "Usage: $0 <config.json>"
     exit 1
 fi
 
-# read config
-device=$(jq -r '.device' $CONFIG_FILE)
-version=$(jq -r '.version' $CONFIG_FILE)
-is64=$(jq -r '.is64' $CONFIG_FILE)
-ipsw_url=$(jq -r '.ipsw_url' $CONFIG_FILE)
-buildid=$(jq -r '.buildid' $CONFIG_FILE)
-applewiki_url=$(jq -r '.applewiki_url' $CONFIG_FILE)
+CONFIG="$1"
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+BIN_DIR="$SCRIPT_DIR/bin"
+WORKDIR="$SCRIPT_DIR/work"
+OUTDIR="$SCRIPT_DIR/SSH-Ramdisk-$(jq -r '.device' "$CONFIG")"
 
-echo "**** Building SSH Ramdisk ****"
-echo "Device: $device, Version: $version, 64-bit: $is64"
-echo "IPSW URL: $ipsw_url"
-echo "AppleWiki URL: $applewiki_url"
+mkdir -p "$WORKDIR" "$OUTDIR"
+cd "$WORKDIR"
 
-mkdir -p SSH-Ramdisk-$device/work
-cd SSH-Ramdisk-$device/work || exit
+# Parse JSON config
+DEVICE=$(jq -r '.device' "$CONFIG")
+IS64=$(jq -r '.is64' "$CONFIG")
+IPSW_URL=$(jq -r '.ipsw_url' "$CONFIG")
 
-# Download IPSW components using partialZipBrowser
-echo "Extracting BuildManifest.plist..."
-../../bin/partialZipBrowser -g BuildManifest.plist "$ipsw_url" &> /dev/null
+echo "[*] Device: $DEVICE"
+echo "[*] 64-bit? $IS64"
+echo "[*] IPSW URL: $IPSW_URL"
 
-components="iBSS iBEC applelogo DeviceTree kernelcache RestoreRamDisk"
+COMPONENTS=(iBSS iBEC DeviceTree KernelCache RestoreRamDisk)
+declare -A IV KEY PATH
 
-for comp in $components; do
-    echo "Processing $comp..."
-    # fetch keys from AppleWiki page
-    iv=$(grep "$comp-iv" ../../temp_keys.html | awk -F">" '{print $2}' | awk -F"<" '{print $1}')
-    key=$(grep "$comp-key" ../../temp_keys.html | awk -F">" '{print $2}' | awk -F"<" '{print $1}')
+for comp in "${COMPONENTS[@]}"; do
+    IV[$comp]=$(jq -r ".keys[\"$comp\"].iv" "$CONFIG")
+    KEY[$comp]=$(jq -r ".keys[\"$comp\"].key" "$CONFIG")
+    PATH[$comp]=$(jq -r ".components[\"$comp\"]" "$CONFIG")
+done
 
-    ../../bin/partialZipBrowser -g "$comp*" "$ipsw_url" &> /dev/null
+# Download & decrypt components
+for comp in "${COMPONENTS[@]}"; do
+    echo "[*] Processing $comp..."
+    FILE="${PATH[$comp]}"
+    BASENAME=$(basename "$FILE")
 
-    if [ "$comp" = "RestoreRamDisk" ]; then
-        if [ "$is64" = "true" ]; then
-            ../../bin/img4 -i "$comp*" -o RestoreRamDisk.raw.dmg -iv $iv -k $key
+    # Download if missing
+    if [ ! -f "$BASENAME" ]; then
+        echo "[+] Downloading $FILE..."
+        "$BIN_DIR/partialZipBrowser" -g "$BASENAME" "$IPSW_URL" || {
+            echo "[!] Failed to download $BASENAME"
+            exit 1
+        }
+    fi
+
+    # Decrypt based on 32/64-bit
+    if [ "$IS64" = "true" ]; then
+        if [ "$comp" = "RestoreRamDisk" ]; then
+            "$BIN_DIR/img4" -i "$BASENAME" -o RestoreRamDisk.raw.dmg -k "${KEY[$comp]}" -iv "${IV[$comp]}"
         else
-            ../../bin/xpwntool "$comp*" RestoreRamDisk.dec.img3 -iv $iv -k $key -decrypt
+            "$BIN_DIR/img4" -i "$BASENAME" -o "${comp}.raw" -k "${KEY[$comp]}" -iv "${IV[$comp]}"
         fi
     else
-        if [ "$is64" = "true" ]; then
-            ../../bin/img4 -i "$comp*" -o "$comp.raw" -iv $iv -k $key
+        if [ "$comp" = "RestoreRamDisk" ]; then
+            "$BIN_DIR/xpwntool" "$BASENAME" RestoreRamDisk.raw.dmg -k "${KEY[$comp]}" -iv "${IV[$comp]}" -decrypt
         else
-            ../../bin/xpwntool "$comp*" "$comp.dec.img3" -iv $iv -k $key -decrypt
+            "$BIN_DIR/xpwntool" "$BASENAME" "${comp}.raw" -k "${KEY[$comp]}" -iv "${IV[$comp]}" -decrypt
         fi
     fi
 done
 
-# Ramdisk build (basic)
-if [ "$is64" = "true" ]; then
-    echo "64-bit ramdisk build not implemented yet (placeholder)"
+# Build SSH ramdisk
+echo "[*] Creating SSH ramdisk..."
+mkdir -p ramdisk_mount
+
+if [ "$IS64" = "true" ]; then
+    # 64-bit: img4/64-bit style mount
+    hdiutil attach -mountpoint ramdisk_mount RestoreRamDisk.raw.dmg
+    tar -xvf "$SCRIPT_DIR/resources/iosbinpack.tar" -C ramdisk_mount
+    cp "$SCRIPT_DIR/resources/dropbear.plist" ramdisk_mount/System/Library/LaunchDaemons/
+    cp "$SCRIPT_DIR/resources/dropbear_rsa_host_key" ramdisk_mount/private/var/
 else
-    echo "Building 32-bit ramdisk..."
-    ../../bin/xpwntool RestoreRamDisk.dec.img3 RestoreRamDisk.raw.dmg
-    hdiutil resize -size 30MB RestoreRamDisk.raw.dmg
-    mkdir ramdisk_mountpoint
-    hdiutil attach -mountpoint ramdisk_mountpoint RestoreRamDisk.raw.dmg
-    tar -xvf ../../resources/ssh.tar -C ramdisk_mountpoint/
-    hdiutil detach ramdisk_mountpoint
-    ../../bin/xpwntool RestoreRamDisk.raw.dmg ramdisk.dmg -t RestoreRamDisk.dec.img3
-    mv ramdisk.dmg ../
+    # 32-bit: xpwntool style mount
+    hdiutil attach -mountpoint ramdisk_mount RestoreRamDisk.raw.dmg
+    tar -xvf "$SCRIPT_DIR/resources/ssh.tar" -C ramdisk_mount
 fi
 
-cd ../..
-echo "SSH Ramdisk creation DONE!"
+hdiutil detach ramdisk_mount
+
+# Repack RestoreRamDisk for final output
+if [ "$IS64" = "true" ]; then
+    "$BIN_DIR/img4" -i RestoreRamDisk.raw.dmg -o "$OUTDIR/ramdisk.dmg"
+else
+    "$BIN_DIR/xpwntool" RestoreRamDisk.raw.dmg "$OUTDIR/ramdisk.dmg" -t RestoreRamDisk.raw.dmg
+fi
+
+# Copy other components
+for comp in "${COMPONENTS[@]}"; do
+    if [ "$comp" != "RestoreRamDisk" ]; then
+        cp -v "${comp}.raw" "$OUTDIR/$comp.raw"
+    fi
+done
+
+echo "[+] SSH Ramdisk successfully built at $OUTDIR"
